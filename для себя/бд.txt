@@ -1,0 +1,470 @@
+-- Создаем таблицу users с улучшенными проверками
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(255) NOT NULL 
+    CHECK (email ~* '^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+[.][A-Za-z]+$'),
+  phone VARCHAR(20) NOT NULL 
+    CHECK (phone ~ '^[0-9]{11}$' AND phone LIKE '7%'),
+  password VARCHAR(255) NOT NULL 
+    CHECK (length(password) >= 8),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  is_active BOOLEAN DEFAULT TRUE,
+  CONSTRAINT unique_email UNIQUE (email),
+  CONSTRAINT unique_phone UNIQUE (phone)
+);
+
+-- Установка расширения для хеширования (если еще не установлено)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Улучшенная функция регистрации
+CREATE OR REPLACE FUNCTION register_user(
+  p_name VARCHAR,
+  p_email VARCHAR,
+  p_phone VARCHAR,
+  p_password VARCHAR
+) RETURNS INT AS $$
+DECLARE
+  user_id INT;
+  email_count INT;
+  phone_count INT;
+BEGIN
+  -- Проверка пароля
+  IF length(p_password) < 8 THEN
+    RAISE EXCEPTION 'Пароль должен содержать минимум 8 символов';
+  END IF;
+
+  -- Проверка формата телефона
+  IF p_phone !~ '^7[0-9]{10}$' THEN
+    RAISE EXCEPTION 'Телефон должен начинаться с 7 и содержать 11 цифр';
+  END IF;
+
+  -- Проверка уникальности email и телефона
+  SELECT COUNT(*) INTO email_count FROM users WHERE email = p_email;
+  IF email_count > 0 THEN
+    RAISE EXCEPTION 'Email уже используется';
+  END IF;
+  
+  SELECT COUNT(*) INTO phone_count FROM users WHERE phone = p_phone;
+  IF phone_count > 0 THEN
+    RAISE EXCEPTION 'Телефон уже используется';
+  END IF;
+
+  -- Вставка данных
+  INSERT INTO users (name, email, phone, password)
+  VALUES (
+    p_name,
+    p_email,
+    p_phone,
+    crypt(p_password, gen_salt('bf', 8))
+  ) RETURNING id INTO user_id;
+
+  RETURN user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Функция для обновления пароля
+CREATE OR REPLACE FUNCTION update_password(
+  p_user_id INT,
+  p_new_password VARCHAR
+) RETURNS VOID AS $$
+BEGIN
+  -- Те же проверки пароля
+  IF length(p_new_password) < 8 THEN
+    RAISE EXCEPTION 'Пароль должен содержать минимум 8 символов';
+  END IF;
+
+  UPDATE users SET 
+    password = crypt(p_new_password, gen_salt('bf', 8)),
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = p_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Авторы
+CREATE TABLE authors (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  bio TEXT
+);
+
+-- 3. Жанры
+CREATE TABLE categories (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(50) NOT NULL
+);
+
+-- 4. Книги
+CREATE TABLE books (
+  id SERIAL PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  author_id INT REFERENCES authors(id),
+  description TEXT,
+  cover_image VARCHAR(255),
+  file_path VARCHAR(255) NOT NULL,
+  price DECIMAL(10, 2) DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. Связь книг и жанров
+CREATE TABLE book_categories (
+  book_id INT REFERENCES books(id),
+  category_id INT REFERENCES categories(id),
+  PRIMARY KEY (book_id, category_id)
+);
+
+-- 6. Корзина
+CREATE TABLE guest_cart (
+  id SERIAL PRIMARY KEY,
+  session_id VARCHAR(255) NOT NULL,
+  book_id INT REFERENCES books(id),
+  quantity INT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. Отзывы
+CREATE TABLE reviews (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id),
+  book_id INT REFERENCES books(id),
+  rating INT CHECK (rating BETWEEN 1 AND 5),
+  text TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Создаем индексы
+-- Создаем индексы для таблицы guest_cart
+CREATE INDEX idx_guest_cart_session ON guest_cart(session_id);
+CREATE INDEX idx_guest_cart_book ON guest_cart(book_id);
+
+-- Индекс для таблицы reviews
+CREATE INDEX idx_reviews_book ON reviews(book_id);
+
+-- Таблица для корзины авторизованных пользователей
+CREATE TABLE user_cart (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    book_id INT REFERENCES books(id) ON DELETE CASCADE,
+    quantity INT DEFAULT 1 CHECK (quantity > 0),
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, book_id)
+);
+
+-- Создаем индексы для таблицы user_cart
+CREATE INDEX idx_user_cart_user ON user_cart(user_id);
+CREATE INDEX idx_user_cart_book ON user_cart(book_id);
+
+CREATE TABLE user_books_archive (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL,
+    book_id INT,
+    book_title VARCHAR(255) NOT NULL,
+    book_author VARCHAR(255) NOT NULL,
+    book_price DECIMAL(10,2) NOT NULL,
+    purchase_date TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+ALTER TABLE books ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
+
+-- 2. Авторы
+INSERT INTO authors (name, bio) VALUES 
+('Фёдор Достоевский', 'Классик русской литературы'),
+('Джордж Оруэлл', 'Английский писатель'),
+('Джоан Роулинг', 'Автор серии о Гарри Поттере'),
+('Агата Кристи', 'Королева детектива'),
+('Лев Толстой', 'Классик русской литературы, автор "Войны и мира"'),
+('Стивен Кинг', 'Мастер современной прозы ужасов'),
+('Рэй Брэдбери', 'Американский писатель-фантаст'),
+('Дэн Браун', 'Автор интеллектуальных триллеров'),
+('Джон Толкин', 'Создатель мира Средиземья'),
+('Эрих Мария Ремарк', 'Немецкий писатель, автор "Трех товарищей"'),
+('Михаил Булгаков', 'Русский писатель, автор "Мастера и Маргариты"'),
+('Антон Чехов', 'Классик русской литературы, мастер короткого рассказа'),
+('Артур Конан Дойл', 'Создатель Шерлока Холмса'),
+('Габриэль Гарсиа Маркес', 'Колумбийский писатель, автор "Ста лет одиночества"');
+select * from authors;
+
+-- 3. Жанры
+INSERT INTO categories (name) VALUES 
+('Классика'),
+('Фантастика'),
+('Детектив'),
+('Антиутопия'),
+('Фэнтези');
+select * from categories;
+
+-- 4. Книги
+INSERT INTO books (title, author_id, description, cover_image, file_path, price) VALUES 
+('Преступление и наказание', 1, 'Роман о нравственных терзаниях', 'crime.jpg', 'books/crime.epub', 350),
+('1984', 2, 'Антиутопия о тоталитарном обществе', '1984.jpg', 'books/1984.epub', 400),
+('Гарри Поттер и философский камень', 3, 'Первая книга о юном волшебнике', 'potter1.jpg', 'books/potter1.epub', 450),
+('Убийство в Восточном экспрессе', 4, 'Знаменитый детектив', 'orient.jpg', 'books/orient.epub', 380),
+('Братья Карамазовы', 1, 'Последний роман Достоевского', 'karamazov.jpg', 'books/karamazov.epub', 420),
+('Война и мир', 5, 'Эпический роман о войне 1812 года', 'war_and_peace.jpg', 'books/war_and_peace.epub', 500),
+('Сияние', 6, 'Классический роман ужасов', 'shining.jpg', 'books/shining.epub', 450),
+('451 градус по Фаренгейту', 7, 'Антиутопия о мире без книг', 'fahrenheit.jpg', 'books/fahrenheit.epub', 380),
+('Код да Винчи', 8, 'Интеллектуальный триллер', 'davinci.jpg', 'books/davinci.epub', 420),
+('Властелин колец', 9, 'Эпическая фэнтези-сага', 'lotr.jpg', 'books/lotr.epub', 600),
+('Три товарища', 10, 'Роман о дружбе и любви', 'three_comrades.jpg', 'books/three_comrades.epub', 350),
+('Мастер и Маргарита', 11, 'Мистический роман о дьяволе в Москве', 'master.jpg', 'books/master.epub', 400),
+('Вишневый сад', 12, 'Классическая пьеса', 'cherry_orchard.jpg', 'books/cherry_orchard.epub', 300),
+('Приключения Шерлока Холмса', 13, 'Сборник детективных рассказов', 'holmes.jpg', 'books/holmes.epub', 450),
+('Сто лет одиночества', 14, 'Роман в стиле магического реализма', 'solitude.jpg', 'books/solitude.epub', 480),
+('Анна Каренина', 5, 'Роман о трагической любви', 'karenina.jpg', 'books/karenina.epub', 420),
+('Оно', 6, 'Роман ужасов о древнем зле', 'it.jpg', 'books/it.epub', 470),
+('Марсианские хроники', 7, 'Сборник научно-фантастических рассказов', 'martian.jpg', 'books/martian.epub', 390),
+('Ангелы и демоны', 8, 'Триллер о противостоянии науки и религии', 'angels.jpg', 'books/angels.epub', 430),
+('Хоббит', 9, 'Сказочная повесть о путешествии Бильбо', 'hobbit.jpg', 'books/hobbit.epub', 400),
+('На западном фронте без перемен', 10, 'Роман о Первой мировой войне', 'western_front.jpg', 'books/western_front.epub', 360),
+('Собачье сердце', 11, 'Сатирическая повесть', 'dog_heart.jpg', 'books/dog_heart.epub', 320),
+('Дама с собачкой', 12, 'Классическая повесть о любви', 'lady_dog.jpg', 'books/lady_dog.epub', 280),
+('Знак четырех', 13, 'Детектив о Шерлоке Холмсе', 'sign_four.jpg', 'books/sign_four.epub', 350),
+('Любовь во время чумы', 14, 'Роман о вечной любви', 'love_plague.jpg', 'books/love_plague.epub', 410);
+select * from books;
+
+
+-- 6. Отзывы
+INSERT INTO reviews (user_id, book_id, rating, text) VALUES 
+(4, 1, 5, 'Величайший роман всех времен!'),
+(2, 1, 4, 'Сложно читать, но очень глубоко'),
+(3, 2, 5, 'Пугающе актуально в наше время'),
+(2, 3, 5, 'Любимая книга детства'),
+(2, 4, 4, 'Неожиданная развязка'),
+(3, 5, 5, 'Философская глубина поражает');
+
+-- 7. Корзины
+INSERT INTO guest_cart (session_id, book_id, quantity) VALUES 
+('session_alex', 1, 1),
+('session_alex', 3, 2),
+('session_maria', 2, 1),
+('session_maria', 4, 1),
+('session_guest', 5, 1);
+
+-- Таблица заказов
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    total_amount NUMERIC(10, 2) NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Таблица товаров в заказе
+CREATE TABLE order_items (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES orders(id),
+    book_id INTEGER REFERENCES books(id),
+    quantity INTEGER NOT NULL,
+    price NUMERIC(10, 2) NOT NULL
+);
+
+-- Таблица купленных книг пользователя
+CREATE TABLE user_books (
+    user_id INTEGER REFERENCES users(id),
+    book_id INTEGER REFERENCES books(id),
+    purchased_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, book_id)
+);
+
+
+-- Добавляем администратора (id=1)
+INSERT INTO users (name, email, phone, password, is_active) VALUES 
+('Администратор', 'admin@bookstore.ru', '79123456789', crypt('admin123', gen_salt('bf', 8)), TRUE);
+
+-- Добавляем обычных пользователей
+INSERT INTO users (name, email, phone, password) VALUES 
+('Иван Петров', 'ivan@example.com', '79234567890', crypt('user12345', gen_salt('bf', 8))),
+('Мария Сидорова', 'maria@example.com', '79345678901', crypt('user12345', gen_salt('bf', 8))),
+('Алексей Иванов', 'alex@example.com', '79456789012', crypt('user12345', gen_salt('bf', 8)));
+
+INSERT INTO book_categories (book_id, category_id) VALUES 
+-- Преступление и наказание (1) - Классика
+(1, 1),
+-- 1984 (2) - Антиутопия, Фантастика
+(2, 4), (2, 2),
+-- Гарри Поттер и философский камень (3) - Фэнтези
+(3, 5),
+-- Убийство в Восточном экспрессе (4) - Детектив
+(4, 3),
+-- Братья Карамазовы (5) - Классика
+(5, 1),
+-- Война и мир (6) - Классика
+(6, 1),
+-- Сияние (7) - Фантастика
+(7, 2),
+-- 451 градус по Фаренгейту (8) - Антиутопия, Фантастика
+(8, 4), (8, 2),
+-- Код да Винчи (9) - Детектив
+(9, 3),
+-- Властелин колец (10) - Фэнтези
+(10, 5),
+-- Три товарища (11) - Классика
+(11, 1),
+-- Мастер и Маргарита (12) - Классика
+(12, 1),
+-- Вишневый сад (13) - Классика
+(13, 1),
+-- Приключения Шерлока Холмса (14) - Детектив
+(14, 3),
+-- Сто лет одиночества (15) - Классика
+(15, 1),
+-- Анна Каренина (16) - Классика
+(16, 1),
+-- Оно (17) - Фантастика
+(17, 2),
+-- Марсианские хроники (18) - Фантастика
+(18, 2),
+-- Ангелы и демоны (19) - Детектив
+(19, 3),
+-- Хоббит (20) - Фэнтези
+(20, 5),
+-- На западном фронте без перемен (21) - Классика
+(21, 1),
+-- Собачье сердце (22) - Классика
+(22, 1),
+-- Дама с собачкой (23) - Классика
+(23, 1),
+-- Знак четырех (24) - Детектив
+(24, 3),
+-- Любовь во время чумы (25) - Классика
+(25, 1);
+
+CREATE OR REPLACE FUNCTION is_admin(p_user_id INT) 
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN p_user_id = 1; -- ID администратора
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION add_book(
+  p_user_id INT,
+  p_title VARCHAR,
+  p_author_id INT,
+  p_description TEXT,
+  p_cover_image VARCHAR,
+  p_file_path VARCHAR,
+  p_price DECIMAL(10, 2),
+  p_category_ids INT[]
+) RETURNS INT AS $$
+DECLARE
+  new_book_id INT;
+  category_id INT;
+BEGIN
+  -- Проверка прав администратора
+  IF NOT is_admin(p_user_id) THEN
+    RAISE EXCEPTION 'Только администратор может добавлять книги';
+  END IF;
+  
+  -- Проверка цены
+  IF p_price < 0 THEN
+    RAISE EXCEPTION 'Цена не может быть отрицательной';
+  END IF;
+  
+  -- Добавление книги
+  INSERT INTO books (title, author_id, description, cover_image, file_path, price)
+  VALUES (p_title, p_author_id, p_description, p_cover_image, p_file_path, p_price)
+  RETURNING id INTO new_book_id;
+  
+  -- Добавление категорий
+  FOREACH category_id IN ARRAY p_category_ids LOOP
+    INSERT INTO book_categories (book_id, category_id) VALUES (new_book_id, category_id);
+  END LOOP;
+  
+  RETURN new_book_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION update_book(
+  p_user_id INT,
+  p_book_id INT,
+  p_title VARCHAR DEFAULT NULL,
+  p_author_id INT DEFAULT NULL,
+  p_description TEXT DEFAULT NULL,
+  p_price DECIMAL(10, 2) DEFAULT NULL
+) RETURNS VOID AS $$
+BEGIN
+  -- Проверка прав администратора
+  IF NOT is_admin(p_user_id) THEN
+    RAISE EXCEPTION 'Только администратор может изменять книги';
+  END IF;
+  
+  -- Обновление только переданных полей
+  UPDATE books SET
+    title = COALESCE(p_title, title),
+    author_id = COALESCE(p_author_id, author_id),
+    description = COALESCE(p_description, description),
+    price = COALESCE(p_price, price),
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = p_book_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION delete_book(
+  p_user_id INT,
+  p_book_id INT
+) RETURNS VOID AS $$
+BEGIN
+  -- Проверка прав администратора
+  IF NOT is_admin(p_user_id) THEN
+    RAISE EXCEPTION 'Только администратор может удалять книги';
+  END IF;
+  
+  -- Удаление связей с категориями
+  DELETE FROM book_categories WHERE book_id = p_book_id;
+  
+  -- Удаление книги
+  DELETE FROM books WHERE id = p_book_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE VIEW admin_books_view AS
+SELECT 
+  b.id, 
+  b.title, 
+  a.name AS author, 
+  string_agg(c.name, ', ') AS categories,
+  b.price,
+  b.created_at,
+  COUNT(r.id) AS reviews_count,
+  COALESCE(AVG(r.rating), 0) AS avg_rating
+FROM books b
+JOIN authors a ON b.author_id = a.id
+LEFT JOIN book_categories bc ON b.id = bc.book_id
+LEFT JOIN categories c ON bc.category_id = c.id
+LEFT JOIN reviews r ON b.id = r.book_id
+GROUP BY b.id, a.name;
+
+CREATE TABLE admin_actions_log (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id),
+  action_type VARCHAR(50) NOT NULL,
+  table_name VARCHAR(50) NOT NULL,
+  record_id INT,
+  action_details TEXT,
+  action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE FUNCTION log_admin_action()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF is_admin(NEW.user_id) THEN
+    INSERT INTO admin_actions_log (user_id, action_type, table_name, record_id, action_details)
+    VALUES (
+      NEW.user_id,
+      TG_OP, -- Тип операции (INSERT, UPDATE, DELETE)
+      TG_TABLE_NAME, -- Имя таблицы
+      NEW.id,
+      CASE 
+        WHEN TG_OP = 'DELETE' THEN NULL
+        ELSE to_json(NEW)::TEXT
+      END
+    );
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+

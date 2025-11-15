@@ -1,0 +1,27 @@
+1.
+<script>alert('XSS')</script>
+
+из за htmlspecialchais работает:
+<input type="hidden" name="category" value="<?= htmlspecialchars($category) ?>">
+
+
+2. 
+в поисковую строку сайта, в админку не может зайти никто кроме админа
+http://localhost/pages/admin/Acatalog.php
+если убрать эти строчки:
+// Проверка авторизации
+if (!isset($_SESSION['user_id']) || $_SESSION['user_id'] != 1) {
+    header("Location: /pages/login.php");
+    exit;
+}
+
+то может любой делать
+
+3. Отзывы:
+// Удаление ссылок из текста отзыва
+    // Регулярное выражение для поиска URL-адресов
+    $text = preg_replace('/https?:\/\/[^\s]+/', '[ссылка удалена]', $text);
+    // Удаление доменов без http(s) (например, example.com)
+    $text = preg_replace('/[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}(\/\S*)?/', '[ссылка удалена]', $text);
+    // Удаление упоминаний www
+    $text = preg_replace('/www\.[^\s]+/', '[ссылка удалена]', $text);
